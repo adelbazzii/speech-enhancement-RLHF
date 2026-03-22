@@ -9,7 +9,7 @@ from utils import LearnableSigmoid
 def pesq_loss(clean, noisy, sr=16000):
     try:
         pesq_score = pesq(sr, clean, noisy, "wb")
-    except:
+    except Exception:
         # error can happen due to silent period
         pesq_score = -1
     return pesq_score

@@ -2434,7 +2434,7 @@ def get_librosa_melspec(
                 y = y[ms_channel, :]
         else:
             y, sr = lb.load(file_path, sr=sr)
-    except:
+    except Exception:
         raise ValueError("Could not load file {}".format(file_path))
 
     hop_length = int(sr * hop_length)
