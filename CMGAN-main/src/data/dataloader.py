@@ -1,9 +1,10 @@
+import os
+import random
+
 import torch.utils.data
 import torchaudio
-import os
-from utils import *
-import random
 from natsort import natsorted
+from utils import *
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
 

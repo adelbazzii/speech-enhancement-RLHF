@@ -1,6 +1,6 @@
-from models.conformer import ConformerBlock
 import torch
 import torch.nn as nn
+from models.conformer import ConformerBlock
 
 
 class DilatedDenseNet(nn.Module):

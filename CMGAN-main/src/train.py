@@ -1,32 +1,50 @@
-from models.generator import TSCNet
-from models import discriminator
-import os
-from data import dataloader
-import torch.nn.functional as F
-import torch
-from utils import power_compress, power_uncompress
-import logging
-from torchinfo import summary
 import argparse
+import logging
+import os
 
+import torch
 import torch.multiprocessing as mp
+import torch.nn.functional as F
+from models import discriminator
+from models.generator import TSCNet
+from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.distributed import init_process_group, destroy_process_group
+from torchinfo import summary
+from utils import power_compress, power_uncompress
+
+from data import dataloader
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--epochs", type=int, default=120, help="number of epochs of training")
+parser.add_argument(
+    "--epochs", type=int, default=120, help="number of epochs of training"
+)
 parser.add_argument("--batch_size", type=int, default=4)
 parser.add_argument("--log_interval", type=int, default=500)
-parser.add_argument("--decay_epoch", type=int, default=30, help="epoch from which to start lr decay")
+parser.add_argument(
+    "--decay_epoch", type=int, default=30, help="epoch from which to start lr decay"
+)
 parser.add_argument("--init_lr", type=float, default=5e-4, help="initial learning rate")
-parser.add_argument("--cut_len", type=int, default=16000*2, help="cut length, default is 2 seconds in denoise "
-                                                                 "and dereverberation")
-parser.add_argument("--data_dir", type=str, default='dir to VCTK-DEMAND dataset',
-                    help="dir of VCTK+DEMAND dataset")
-parser.add_argument("--save_model_dir", type=str, default='./saved_model',
-                    help="dir of saved model")
-parser.add_argument("--loss_weights", type=list, default=[0.1, 0.9, 0.2, 0.05],
-                    help="weights of RI components, magnitude, time loss, and Metric Disc")
+parser.add_argument(
+    "--cut_len",
+    type=int,
+    default=16000 * 2,
+    help="cut length, default is 2 seconds in denoise and dereverberation",
+)
+parser.add_argument(
+    "--data_dir",
+    type=str,
+    default="dir to VCTK-DEMAND dataset",
+    help="dir of VCTK+DEMAND dataset",
+)
+parser.add_argument(
+    "--save_model_dir", type=str, default="./saved_model", help="dir of saved model"
+)
+parser.add_argument(
+    "--loss_weights",
+    type=list,
+    default=[0.1, 0.9, 0.2, 0.05],
+    help="weights of RI components, magnitude, time loss, and Metric Disc",
+)
 args = parser.parse_args()
 logging.basicConfig(level=logging.INFO)
 
@@ -74,8 +92,9 @@ class Trainer:
         # Normalization
         c = torch.sqrt(noisy.size(-1) / torch.sum((noisy**2.0), dim=-1))
         noisy, clean = torch.transpose(noisy, 0, 1), torch.transpose(clean, 0, 1)
-        noisy, clean = torch.transpose(noisy * c, 0, 1), torch.transpose(
-            clean * c, 0, 1
+        noisy, clean = (
+            torch.transpose(noisy * c, 0, 1),
+            torch.transpose(clean * c, 0, 1),
         )
 
         noisy_spec = torch.stft(
@@ -292,6 +311,5 @@ def main(rank: int, world_size: int, args):
 
 
 if __name__ == "__main__":
-
     world_size = torch.cuda.device_count()
     mp.spawn(main, args=(world_size, args), nprocs=world_size)

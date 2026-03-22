@@ -1,8 +1,8 @@
 import numpy as np
-from joblib import Parallel, delayed
-from pesq import pesq
 import torch
 import torch.nn as nn
+from joblib import Parallel, delayed
+from pesq import pesq
 from utils import LearnableSigmoid
 
 

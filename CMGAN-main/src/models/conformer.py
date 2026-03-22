@@ -1,9 +1,8 @@
 import torch
-from torch import nn, einsum
 import torch.nn.functional as F
-
 from einops import rearrange
 from einops.layers.torch import Rearrange
+from torch import einsum, nn
 
 # source: https://github.com/lucidrains/conformer/blob/master/conformer/conformer.py
 # helper functions
@@ -191,7 +190,7 @@ class ConformerBlock(nn.Module):
         conv_kernel_size=31,
         attn_dropout=0.0,
         ff_dropout=0.0,
-        conv_dropout=0.0
+        conv_dropout=0.0,
     ):
         super().__init__()
         self.ff1 = FeedForward(dim=dim, mult=ff_mult, dropout=ff_dropout)

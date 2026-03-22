@@ -1,13 +1,14 @@
+import argparse
+import os
+
 import numpy as np
+import soundfile as sf
+import torch
+import torchaudio
 from models import generator
 from natsort import natsorted
-import os
 from tools.compute_metrics import compute_metrics
 from utils import power_compress, power_uncompress
-import torchaudio
-import soundfile as sf
-import argparse
-import torch
 
 
 @torch.no_grad()
@@ -102,12 +103,27 @@ def evaluation(model_path, noisy_dir, clean_dir, save_tracks, saved_dir):
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--model_path", type=str, default='./best_ckpt/ckpt_80',
-                    help="the path where the model is saved")
-parser.add_argument("--test_dir", type=str, default='dir to your VCTK-DEMAND test dataset',
-                    help="noisy tracks dir to be enhanced")
-parser.add_argument("--save_tracks", type=str, default=True, help="save predicted tracks or not")
-parser.add_argument("--save_dir", type=str, default='./saved_tracks_best', help="where enhanced tracks to be saved")
+parser.add_argument(
+    "--model_path",
+    type=str,
+    default="./best_ckpt/ckpt_80",
+    help="the path where the model is saved",
+)
+parser.add_argument(
+    "--test_dir",
+    type=str,
+    default="dir to your VCTK-DEMAND test dataset",
+    help="noisy tracks dir to be enhanced",
+)
+parser.add_argument(
+    "--save_tracks", type=str, default=True, help="save predicted tracks or not"
+)
+parser.add_argument(
+    "--save_dir",
+    type=str,
+    default="./saved_tracks_best",
+    help="where enhanced tracks to be saved",
+)
 
 args = parser.parse_args()
 

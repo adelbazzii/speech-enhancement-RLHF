@@ -4,7 +4,9 @@ Modifications in signal processing function
 
 Reimplemented: Wooseok Shin
 """
+
 import torch
+
 
 def get_spec_and_phase(signal):
     stft = torch.stft(
@@ -14,7 +16,7 @@ def get_spec_and_phase(signal):
         512,
         torch.hamming_window(512).to(signal.device),
         center=True,
-        pad_mode='constant',
+        pad_mode="constant",
         normalized=False,
         onesided=True,
         return_complex=False,
@@ -25,6 +27,7 @@ def get_spec_and_phase(signal):
     feat = spectral_magnitude(stft, power=0.5)
     feat = torch.log1p(feat)
     return feat, phase
+
 
 def spectral_magnitude(stft, power=1, log=False, eps=1e-14):
     spectr = stft.pow(2).sum(-1)
@@ -37,6 +40,7 @@ def spectral_magnitude(stft, power=1, log=False, eps=1e-14):
     if log:
         return torch.log(spectr + eps)
     return spectr
+
 
 def transform_spec_to_wav(mag, phase, signal_length=None):
     # Combine with enhanced magnitude
@@ -51,8 +55,10 @@ def transform_spec_to_wav(mag, phase, signal_length=None):
         ),
     )
     complex_predictions = complex_predictions.permute(0, 2, 1, 3)
-    complex_predictions = torch.complex(complex_predictions[..., 0], complex_predictions[..., 1])
-    
+    complex_predictions = torch.complex(
+        complex_predictions[..., 0], complex_predictions[..., 1]
+    )
+
     pred_wavs = torch.istft(
         input=complex_predictions,
         n_fft=512,

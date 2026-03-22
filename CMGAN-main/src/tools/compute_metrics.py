@@ -1,10 +1,11 @@
-import numpy as np
-from scipy.io import wavfile
-from scipy.linalg import toeplitz, norm
-from scipy.fftpack import fft
 import math
-from scipy import signal
+
+import numpy as np
 from pesq import pesq
+from scipy import signal
+from scipy.fftpack import fft
+from scipy.io import wavfile
+from scipy.linalg import norm, toeplitz
 
 """ 
 This is a python script which can be regarded as implementation of matlab script "compute_metrics.m".
