@@ -1,5 +1,6 @@
 #data
-data/*
+data/voicebank_demand/*
+data/libri_mix/*
 
 #environment
 .venv/
