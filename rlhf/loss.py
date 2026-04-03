@@ -11,16 +11,12 @@ def gaussian_log_prob(action, mean, sigma=0.01):
     return -0.5 * diff_sq / (sigma**2) - 0.5 * D * math.log(2 * math.pi * sigma**2)
 
 # Computes the KL divergence between RL and SFT Gaussian distributions
-# KL divergence measures how much the RL generator has drifted from the original pre-trained generator
-# mean_rl = current RL generator's predicted masks
-# mean_sft = frozen SFT generator's predicted masks
 def gaussian_kl(mean_rl, mean_sft, sigma=0.01):
     B = mean_rl.shape[0]
     diff_sq = ((mean_rl - mean_sft) ** 2).view(B, -1).sum(dim=1)
     return diff_sq / (2 * sigma**2)
 
 # Overall reward function that combines the reward from the reward model and the KL divergence penalty
-# It balances maximizing the NISQA reward against staying close to the original model. 
 def compute_j_theta(reward, kl_div, beta=0.0001):
     return reward - beta * kl_div
 
@@ -47,7 +43,5 @@ def metricgan_mse_loss(enhanced_mag, clean_mag):
     return F.mse_loss(enhanced_mag, clean_mag)
 
 # The final training loss
-# L_theta = ppo_loss + λ × mse_loss
-# This is what gets backpropagated to update the generator weights.
 def combined_loss(ppo_loss, mse_loss, lam=1.0):
     return ppo_loss + lam * mse_loss
