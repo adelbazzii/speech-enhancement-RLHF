@@ -97,7 +97,7 @@ speech-enhancement-RLHF/
 | MetricGAN+ model | Cloned | BiLSTM generator, discriminator, training |
 | NISQA reward model | Cloned | CNN+SA quality predictor, predict/train scripts |
 | RLHF loss functions (`rlhf/loss.py`) | Complete | PPO clip loss, KL divergence, combined loss |
-| RLHF training loop (`train_rlhf.py`) | In progress | Model loading done; training loop incomplete |
+| RLHF training loop (`train_rlhf.py`) | In progress | CMGAN loop complete; MetricGAN+ stub remaining |
 
 ---
 
@@ -105,18 +105,18 @@ speech-enhancement-RLHF/
 
 **train_rlhf.py - CMGAN**
 
-- [ ] SFT policy forward pass: STFT → normalize → run frozen generator → get masks
-- [ ] RL policy forward pass: same pipeline + add Gaussian noise to masks
-- [ ] Convert both outputs back to audio (iSTFT) for reward computation
-- [ ] Load NISQA from `nisqa/weights/nisqa_mos_only.tar` and run inference on both outputs
-- [ ] Compute reward: `r_mos = NISQA(ŷ_rl) − NISQA(ŷ_sft)`
-- [ ] Compute KL divergence between RL and SFT policies using `gaussian_kl()`
-- [ ] Compute `J_theta = reward − β × KL` using `compute_j_theta()`
-- [ ] Compute log probabilities for old and new RL policy using `gaussian_log_prob()`
-- [ ] Compute PPO clip loss using `ppo_clip_loss()`
-- [ ] Compute MSE loss using `cmgan_mse_loss()`
-- [ ] Combine: `L_theta = ppo_loss + λ × mse_loss` using `combined_loss()`
-- [ ] Gradient accumulation and optimizer step
+- [x] SFT policy forward pass: STFT → normalize → run frozen generator → get masks
+- [x] RL policy forward pass: same pipeline + add Gaussian noise to masks
+- [x] Convert both outputs back to audio (iSTFT) for reward computation
+- [x] Load NISQA from `nisqa/weights/nisqa_mos_only.tar` and run inference on both outputs
+- [x] Compute reward: `r_mos = NISQA(ŷ_rl) − NISQA(ŷ_sft)`
+- [x] Compute KL divergence between RL and SFT policies using `gaussian_kl()`
+- [x] Compute `J_theta = reward − β × KL` using `compute_j_theta()`
+- [x] Compute log probabilities for old and new RL policy using `gaussian_log_prob()`
+- [x] Compute PPO clip loss using `ppo_clip_loss()`
+- [x] Compute MSE loss using `cmgan_mse_loss()`
+- [x] Combine: `L_theta = ppo_loss + λ × mse_loss` using `combined_loss()`
+- [x] Gradient accumulation and optimizer step
 
 **train_rlhf.py - MetricGAN+**
 
@@ -125,7 +125,7 @@ speech-enhancement-RLHF/
 
 **train_rlhf.py - General**
 
-- [ ] Implement `main()` with argument parsing (lr, batch size, steps, data dir, etc.)
+- [x] Implement `main()` with hardcoded configuration
 - [ ] Checkpoint saving for RLHF-trained models
 - [ ] Logging (loss, reward, KL divergence per step)
 - [ ] Evaluation against baseline after training
@@ -133,3 +133,4 @@ speech-enhancement-RLHF/
 ---
 
 *Last edited: 2026-04-03*
+
