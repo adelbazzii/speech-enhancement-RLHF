@@ -1,8 +1,5 @@
 import copy
 import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "models", "cmgan", "src"))
 
 import torch
 from torch.utils.data import DataLoader
@@ -12,18 +9,15 @@ from models.cmgan.src.data.dataloader import DemandDataset
 from models.cmgan.src.models.generator import TSCNet as CMGANGenerator
 from models.cmgan.src.utils import power_compress, power_uncompress
 from models.metricgan_plus.model import Generator as MetricGANGenerator
+from rlhf.buffer import ExperienceBuffer
 from rlhf.loss import (
     cmgan_mse_loss,
     combined_loss,
     compute_j_theta,
     gaussian_kl,
-    gaussian_log_prob,
     ppo_clip_loss,
 )
 from rlhf.nisqa import get_nisqa_score, load_nisqa
-
-from rlhf.buffer import ExperienceBuffer
-
 
 MODEL = "cmgan"  # "cmgan" or "metricgan"
 CMGAN_CKPT = "models/cmgan/src/best_ckpt/ckpt"
@@ -136,12 +130,14 @@ def train_cmgan_rlhf(device):
     sft_generator.eval()
     for p in sft_generator.parameters():
         p.requires_grad = False
-    
+
     # reward model
     nisqa_model, nisqa_args = load_nisqa(ckpt_path=NISQA_CKPT, device=device)
 
     # data loader
-    dataloader = create_dataloader(data_dir=DATA_DIR, split="train", batch_size=BATCH_SIZE, num_workers=NUM_WORKERS)
+    dataloader = create_dataloader(
+        data_dir=DATA_DIR, split="train", batch_size=BATCH_SIZE, num_workers=NUM_WORKERS
+    )
 
     # experience buffer
     buffer = ExperienceBuffer()
@@ -158,11 +154,13 @@ def train_cmgan_rlhf(device):
             except StopIteration:
                 data_iter = iter(dataloader)
                 batch = next(data_iter)
-            
+
             clean = batch[0].to(device)
             noisy = batch[1].to(device)
 
-            noisy_spec, clean_real, clean_imag, window = cmgan_preprocess(noisy=noisy, clean=clean, n_fft=n_fft, hop=hop, device=device)
+            noisy_spec, clean_real, clean_imag, window = cmgan_preprocess(
+                noisy=noisy, clean=clean, n_fft=n_fft, hop=hop, device=device
+            )
 
             with torch.no_grad():
                 # sft forward pass
@@ -170,24 +168,42 @@ def train_cmgan_rlhf(device):
                 sft_real = sft_real.permute(0, 1, 3, 2)
                 sft_imag = sft_imag.permute(0, 1, 3, 2)
                 sft_spec = power_uncompress(sft_real, sft_imag).squeeze(1)
-                sft_audio = torch.istft(sft_spec, n_fft, hop, window=window, onesided=True)
+                sft_audio = torch.istft(
+                    sft_spec, n_fft, hop, window=window, onesided=True
+                )
 
                 # rl forward pass
-                rl_audio, action_mean, action, log_prob_old = cmgan_forward(generator=rl_generator, noisy_spec=noisy_spec, window=window, sigma=SIGMA, add_noise=True)
+                rl_audio, action_mean, action, log_prob_old = cmgan_forward(
+                    generator=rl_generator,
+                    noisy_spec=noisy_spec,
+                    window=window,
+                    sigma=SIGMA,
+                    add_noise=True,
+                )
 
                 # reward
-                rl_mos = get_nisqa_score(nisqa_model=nisqa_model, nisqa_args=nisqa_args, audio=rl_audio, device=device)
-                sft_mos = get_nisqa_score(nisqa_model=nisqa_model, nisqa_args=nisqa_args, audio=sft_audio, device=device)
+                rl_mos = get_nisqa_score(
+                    nisqa_model=nisqa_model,
+                    nisqa_args=nisqa_args,
+                    audio=rl_audio,
+                    device=device,
+                )
+                sft_mos = get_nisqa_score(
+                    nisqa_model=nisqa_model,
+                    nisqa_args=nisqa_args,
+                    audio=sft_audio,
+                    device=device,
+                )
                 reward = rl_mos - sft_mos
 
                 # kl and j_theta
                 kl = gaussian_kl(
-                    mean_rl = torch.cat([action_mean[0], action_mean[1]], dim=1),
+                    mean_rl=torch.cat([action_mean[0], action_mean[1]], dim=1),
                     mean_sft=torch.cat([sft_real, sft_imag], dim=1),
                     sigma=SIGMA,
                 )
                 j_theta = compute_j_theta(reward=reward, kl=kl, beta=BETA)
-            
+
             buffer.add(
                 {
                     "noisy_spec": noisy_spec.detach(),
@@ -198,21 +214,74 @@ def train_cmgan_rlhf(device):
                     "j_theta": j_theta.detach(),
                 }
             )
-        
+
         # ppo update
         for _ in range(PPO_EPOCHS):
-    
+            # zero out gradients
+            optimizer.zero_grad()
 
+            # loop through batches in buffer and accumulate gradients
+            for exp in buffer:
+                # recompute log probability under current policy
+                log_prob_new, (est_real, est_imag) = cmgan_recompute_log_prob(
+                    generator=rl_generator,
+                    noisy_spec=exp["noisy_spec"],
+                    stored_action=exp["action"],
+                    sigma=SIGMA,
+                )
 
+                # ppo loss
+                l_ppo = ppo_clip_loss(
+                    log_prob_new=log_prob_new,
+                    log_prob_old=exp["log_prob_old"],
+                    j_theta=exp["j_theta"],
+                    eps=EPSILON,
+                )
 
+                # mse loss
+                l_mse = cmgan_mse_loss(
+                    est_real=est_real,
+                    est_imag=est_imag,
+                    clean_real=exp["clean_real"],
+                    clean_imag=exp["clean_imag"],
+                    alpha=ALPHA,
+                )
 
+                # combines loss
+                loss = (
+                    combined_loss(l_ppo=l_ppo, l_mse=l_mse, lambda_=LAMBDA)
+                    / ACCUM_STEPS
+                )
+                # accumulate gradients
+                loss.backwards()
 
+            # update weights
+            optimizer.step()
 
+        # clear buffer
+        buffer.clear()
 
+        # log training metrics
+        if step % LOG_INTERVAL == 0:
+            print(
+                f"Step {step}/{MAX_STEPS} | reward={reward.mean().item():.4f} | PPO Loss: {l_ppo.item():.4f} | MSE Loss: {l_mse.item():.4f} | Total Loss: {loss.item():.4f} "
+            )
 
+        # save checkpoint
+        if step % SAVE_EVERY == 0:
+            os.makedirs(SAVE_DIR, exist_ok=True)
+            ckpt_path = os.path.join(SAVE_DIR, f"cmgan_rlhf_step_{step}.pth")
+            torch.save(
+                {
+                    "step": step,
+                    "generator": rl_generator.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                },
+                ckpt_path,
+            )
+            print(f"Saved checkpoint: {ckpt_path}")
 
-
-
+    print("CMGAN RLHF training complete")
 
 
 def train_metrocgan_rlhf(device):
