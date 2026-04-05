@@ -44,7 +44,7 @@ def cmgan_forward(generator, noisy_spec, window, sigma=0.01, add_noise=True):
 
     return enhanced_wav, action_mean, action, lp
 
-
+# recompute log probabilities for current policy
 def cmgan_recompute_log_prob(generator, noisy_spec, stored_action, sigma=0.01):
     est_real, est_imag = generator(noisy_spec)
     est_real = est_real.permute(0, 1, 3, 2)
