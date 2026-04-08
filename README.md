@@ -52,9 +52,13 @@ pip install -e .
 ```
 speech-enhancement-RLHF/
 │
-├── train_rlhf.py                # RLHF training entry point (in progress)
+├── train_rlhf.py                # RLHF training entry point
+├── third_party_path_setup.py    # sys.path setup for third-party internal imports
 ├── rlhf/
-│   └── loss.py                  # PPO, KL divergence, and MSE loss functions
+│   ├── loss.py                  # PPO, KL divergence, and MSE loss functions
+│   ├── policy.py                # Forward pass and log prob computation (CMGAN + MetricGAN+)
+│   ├── buffer.py                # Experience replay buffer
+│   └── nisqa.py                 # NISQA reward model loading and inference
 │
 ├── models/
 │   ├── cmgan/                   # cloned: Conformer-based Metric GAN (CMGAN)
@@ -97,7 +101,9 @@ speech-enhancement-RLHF/
 | MetricGAN+ model | Cloned | BiLSTM generator, discriminator, training |
 | NISQA reward model | Cloned | CNN+SA quality predictor, predict/train scripts |
 | RLHF loss functions (`rlhf/loss.py`) | Complete | PPO clip loss, KL divergence, combined loss |
-| RLHF training loop (`train_rlhf.py`) | In progress | CMGAN loop complete; MetricGAN+ stub remaining |
+| RLHF policy (`rlhf/policy.py`) | Complete | CMGAN and MetricGAN+ forward pass + log prob recomputation |
+| NISQA wrapper (`rlhf/nisqa.py`) | Complete | Batched MOS inference, resampling, mel segmentation |
+| RLHF training loop (`train_rlhf.py`) | Complete | CMGAN and MetricGAN+ loops with checkpoint saving |
 
 ---
 
@@ -120,17 +126,17 @@ speech-enhancement-RLHF/
 
 **train_rlhf.py - MetricGAN+**
 
-- [ ] Implement `train_metricgan_rlhf()` (currently empty stub) following same RLHF loop
-- [ ] Use `metricgan_mse_loss()` instead of `cmgan_mse_loss()`
+- [x] Implement `train_metricgan_rlhf()` following same RLHF loop
+- [x] Use `metricgan_mse_loss()` instead of `cmgan_mse_loss()`
 
 **train_rlhf.py - General**
 
 - [x] Implement `main()` with hardcoded configuration
-- [ ] Checkpoint saving for RLHF-trained models
-- [ ] Logging (loss, reward, KL divergence per step)
+- [x] Checkpoint saving for RLHF-trained models
+- [x] Logging (loss, reward per step)
 - [ ] Evaluation against baseline after training
 
 ---
 
-*Last edited: 2026-04-03*
+*Last edited: 2026-04-07*
 
