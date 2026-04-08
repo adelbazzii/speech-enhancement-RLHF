@@ -1,17 +1,20 @@
 import copy
 import os
+import random
+import sys
+import warnings
 
+import soundfile as sf
 import torch
+from natsort import natsorted
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-import third_party_path_setup
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "models", "cmgan", "src"))
 
-from models.cmgan.src.data.dataloader import DemandDataset
 from models.cmgan.src.models.generator import TSCNet as CMGANGenerator
 from models.cmgan.src.utils import power_compress, power_uncompress
 from models.metricgan_plus.model import Generator as MetricGANGenerator
-
 from rlhf.buffer import ExperienceBuffer
 from rlhf.loss import (
     cmgan_mse_loss,
@@ -23,9 +26,12 @@ from rlhf.loss import (
 )
 from rlhf.nisqa import get_nisqa_score, load_nisqa
 
+warnings.filterwarnings("ignore", category=UserWarning)
+
+
 MODEL = "cmgan"  # "cmgan" or "metricgan"
 CMGAN_CKPT = "models/cmgan/src/best_ckpt/ckpt"
-METRICGAN_CKPT = "models/metricgan-plus/checkpoints"
+METRICGAN_CKPT = "models/metricgan-plus/checkpoints/PESQ-GAN_trial2.pth"
 NISQA_CKPT = "nisqa/weights/nisqa_mos_only.tar"
 DATA_DIR = "data/voicebank_demand"
 SAVE_DIR = "checkpoints/rlhf"
@@ -82,8 +88,51 @@ def load_metricgan(ckpt_path, device):
     return generator
 
 
+SPLIT_DIRS = {
+    "train": {"clean": "clean_trainset_28spk_wav", "noisy": "noisy_trainset_28spk_wav"},
+    "test": {"clean": "clean_testset_wav", "noisy": "noisy_testset_wav"},
+}
+
+
+class VoiceBankDemandDataset(torch.utils.data.Dataset):
+    def __init__(self, data_dir, split="train", cut_len=16000 * 2):
+        self.cut_len = cut_len
+        dirs = SPLIT_DIRS[split]
+        self.clean_dir = os.path.join(data_dir, dirs["clean"])
+        self.noisy_dir = os.path.join(data_dir, dirs["noisy"])
+        self.clean_wav_name = natsorted(os.listdir(self.clean_dir))
+
+    def __len__(self):
+        return len(self.clean_wav_name)
+
+    def __getitem__(self, idx):
+        clean_file = os.path.join(self.clean_dir, self.clean_wav_name[idx])
+        noisy_file = os.path.join(self.noisy_dir, self.clean_wav_name[idx])
+
+        clean_np, _ = sf.read(clean_file)
+        noisy_np, _ = sf.read(noisy_file)
+        clean_ds = torch.from_numpy(clean_np).float()
+        noisy_ds = torch.from_numpy(noisy_np).float()
+        length = len(clean_ds)
+
+        if length < self.cut_len:
+            units = self.cut_len // length
+            clean_ds = torch.cat(
+                [clean_ds] * units + [clean_ds[: self.cut_len % length]]
+            )
+            noisy_ds = torch.cat(
+                [noisy_ds] * units + [noisy_ds[: self.cut_len % length]]
+            )
+        else:
+            start = random.randint(0, length - self.cut_len)
+            clean_ds = clean_ds[start : start + self.cut_len]
+            noisy_ds = noisy_ds[start : start + self.cut_len]
+
+        return clean_ds, noisy_ds, length
+
+
 def create_dataloader(data_dir, split, batch_size, num_workers):
-    ds = DemandDataset(os.path.join(data_dir, split))
+    ds = VoiceBankDemandDataset(data_dir, split)
     dl = DataLoader(
         ds,
         batch_size=batch_size,
@@ -139,17 +188,6 @@ def train_cmgan_rlhf(device):
     nisqa_model, nisqa_args = load_nisqa(ckpt_path=NISQA_CKPT, device=device)
 
     # data loader
-    """
-    Expects the following directory structure:
-    data/
-        voicebank_demand/
-            train/
-                clean/
-                noisy/
-            test/
-                clean/
-                noisy
-    """
     dataloader = create_dataloader(
         data_dir=DATA_DIR, split="train", batch_size=BATCH_SIZE, num_workers=NUM_WORKERS
     )
@@ -183,6 +221,7 @@ def train_cmgan_rlhf(device):
                 sft_real = sft_real.permute(0, 1, 3, 2)
                 sft_imag = sft_imag.permute(0, 1, 3, 2)
                 sft_spec = power_uncompress(sft_real, sft_imag).squeeze(1)
+                sft_spec = torch.complex(sft_spec[..., 0], sft_spec[..., 1])
                 sft_audio = torch.istft(
                     sft_spec, n_fft, hop, window=window, onesided=True
                 )
@@ -270,7 +309,8 @@ def train_cmgan_rlhf(device):
                 # accumulate gradients
                 loss.backward()
 
-            # update weights
+            # clip gradients and update weights
+            torch.nn.utils.clip_grad_norm_(rl_generator.parameters(), max_norm=1.0)
             optimizer.step()
 
         # clear buffer
@@ -300,7 +340,10 @@ def train_cmgan_rlhf(device):
 
 
 def train_metricgan_rlhf(device):
-    from models.metricgan_plus.signal_processing import get_spec_and_phase, transform_spec_to_wav
+    from models.metricgan_plus.signal_processing import (
+        get_spec_and_phase,
+        transform_spec_to_wav,
+    )
     from rlhf.policy import metricgan_forward, metricgan_recompute_log_prob
 
     # rl policy
@@ -339,10 +382,10 @@ def train_metricgan_rlhf(device):
             clean = batch[0].to(device)
             noisy = batch[1].to(device)
 
-            noise_mag, noise_phase = get_spec_and_phase(noisy)
-            clean_mag, _ = get_spec_and_phase(clean)
-
             with torch.no_grad():
+                noise_mag, noise_phase = get_spec_and_phase(noisy)
+                clean_mag, _ = get_spec_and_phase(clean)
+
                 # sft forward pass
                 sft_mask = sft_generator(noise_mag).clamp(min=0.05)
                 sft_enh_mag = sft_mask * noise_mag
@@ -413,9 +456,13 @@ def train_metricgan_rlhf(device):
                     clean_mag=exp["clean_mag"],
                 )
 
-                loss = combined_loss(ppo_loss=l_ppo, mse_loss=l_mse, lam=LAMBDA) / ACCUM_STEPS
+                loss = (
+                    combined_loss(ppo_loss=l_ppo, mse_loss=l_mse, lam=LAMBDA)
+                    / ACCUM_STEPS
+                )
                 loss.backward()
 
+            torch.nn.utils.clip_grad_norm_(rl_generator.parameters(), max_norm=1.0)
             optimizer.step()
 
         buffer.clear()
@@ -442,19 +489,12 @@ def train_metricgan_rlhf(device):
 
 
 def main():
-    # --- Configuration ---
-    model = "cmgan"  # "cmgan" or "metricgan"
-    ckpt_path = "models/cmgan/src/best_ckpt/best_model"
-    nisqa_ckpt = "nisqa/weights/nisqa_mos_only.tar"
-
-
     device = get_device()
     print(f"Using device: {device}")
-    # os.makedirs(save_dir, exist_ok=True)
 
-    if model == "cmgan":
+    if MODEL == "cmgan":
         train_cmgan_rlhf(device=device)
-    elif model == "metricgan":
+    elif MODEL == "metricgan":
         train_metricgan_rlhf(device=device)
 
 
