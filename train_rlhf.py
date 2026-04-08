@@ -198,14 +198,14 @@ def train_cmgan_rlhf(device):
                 # reward
                 rl_mos = get_nisqa_score(
                     nisqa_model=nisqa_model,
-                    nisqa_args=nisqa_args,
-                    audio=rl_audio,
+                    model_args=nisqa_args,
+                    audio_tensor=rl_audio,
                     device=device,
                 )
                 sft_mos = get_nisqa_score(
                     nisqa_model=nisqa_model,
-                    nisqa_args=nisqa_args,
-                    audio=sft_audio,
+                    model_args=nisqa_args,
+                    audio_tensor=sft_audio,
                     device=device,
                 )
                 reward = rl_mos - sft_mos
@@ -216,7 +216,7 @@ def train_cmgan_rlhf(device):
                     mean_sft=torch.cat([sft_real, sft_imag], dim=1),
                     sigma=SIGMA,
                 )
-                j_theta = compute_j_theta(reward=reward, kl=kl, beta=BETA)
+                j_theta = compute_j_theta(reward=reward, kl_div=kl, beta=BETA)
 
             buffer.add(
                 {
@@ -263,11 +263,11 @@ def train_cmgan_rlhf(device):
 
                 # combines loss
                 loss = (
-                    combined_loss(l_ppo=l_ppo, l_mse=l_mse, lambda_=LAMBDA)
+                    combined_loss(ppo_loss=l_ppo, mse_loss=l_mse, lam=LAMBDA)
                     / ACCUM_STEPS
                 )
                 # accumulate gradients
-                loss.backwards()
+                loss.backward()
 
             # update weights
             optimizer.step()
