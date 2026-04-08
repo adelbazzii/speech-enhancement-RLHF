@@ -5,10 +5,13 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+import third_party_path_setup
+
 from models.cmgan.src.data.dataloader import DemandDataset
 from models.cmgan.src.models.generator import TSCNet as CMGANGenerator
 from models.cmgan.src.utils import power_compress, power_uncompress
 from models.metricgan_plus.model import Generator as MetricGANGenerator
+
 from rlhf.buffer import ExperienceBuffer
 from rlhf.loss import (
     cmgan_mse_loss,
@@ -57,7 +60,7 @@ def get_device():
 
 
 def load_cmgan(ckpt_path, device):
-    generator = CMGANGenerator(num_channels=64, num_features=201).to(device)
+    generator = CMGANGenerator(num_channel=64, num_features=201).to(device)
     if os.path.isfile(ckpt_path):
         ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
         generator.load_state_dict(ckpt)
@@ -135,6 +138,17 @@ def train_cmgan_rlhf(device):
     nisqa_model, nisqa_args = load_nisqa(ckpt_path=NISQA_CKPT, device=device)
 
     # data loader
+    """
+    Expects the following directory structure:
+    data/
+        voicebank_demand/
+            train/
+                clean/
+                noisy/
+            test/
+                clean/
+                noisy
+    """
     dataloader = create_dataloader(
         data_dir=DATA_DIR, split="train", batch_size=BATCH_SIZE, num_workers=NUM_WORKERS
     )
@@ -293,30 +307,14 @@ def main():
     model = "cmgan"  # "cmgan" or "metricgan"
     ckpt_path = "models/cmgan/src/best_ckpt/best_model"
     nisqa_ckpt = "nisqa/weights/nisqa_mos_only.tar"
-    data_dir = "data/voicebank_demand"
-    save_dir = "checkpoints/rlhf"
-    lr = 1e-6  # from paper
-    batch_size = 4  # from paper
-    accum_steps = 16  # effective batch size = 4 * 16 = 64 (from paper)
-    max_steps = 1000
-    num_workers = 2
+
 
     device = get_device()
     print(f"Using device: {device}")
     # os.makedirs(save_dir, exist_ok=True)
 
     if model == "cmgan":
-        train_cmgan_rlhf(
-            device=device,
-            lr=lr,
-            data_dir=data_dir,
-            nisqa_ckpt_path=nisqa_ckpt,
-            ckpt_path=ckpt_path,
-            batch_size=batch_size,
-            num_workers=num_workers,
-            max_steps=max_steps,
-            accum_steps=accum_steps,
-        )
+        train_cmgan_rlhf(device=device)
     elif model == "metricgan":
         train_metrocgan_rlhf(device=device)
 

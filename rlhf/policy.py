@@ -1,5 +1,5 @@
 import torch
-from loss import gaussian_log_prob
+from rlhf.loss import gaussian_log_prob
 
 from models.cmgan.src.utils import power_uncompress
 
