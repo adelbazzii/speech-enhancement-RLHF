@@ -18,6 +18,7 @@ from rlhf.loss import (
     combined_loss,
     compute_j_theta,
     gaussian_kl,
+    metricgan_mse_loss,
     ppo_clip_loss,
 )
 from rlhf.nisqa import get_nisqa_score, load_nisqa
@@ -298,8 +299,146 @@ def train_cmgan_rlhf(device):
     print("CMGAN RLHF training complete")
 
 
-def train_metrocgan_rlhf(device):
-    rl_generator = load_metricgan(device=device)
+def train_metricgan_rlhf(device):
+    from models.metricgan_plus.signal_processing import get_spec_and_phase, transform_spec_to_wav
+    from rlhf.policy import metricgan_forward, metricgan_recompute_log_prob
+
+    # rl policy
+    rl_generator = load_metricgan(ckpt_path=METRICGAN_CKPT, device=device)
+    rl_generator.train()
+    optimizer = torch.optim.Adam(rl_generator.parameters(), lr=LR)
+
+    # sft policy
+    sft_generator = copy.deepcopy(rl_generator)
+    sft_generator.eval()
+    for p in sft_generator.parameters():
+        p.requires_grad = False
+
+    # reward model
+    nisqa_model, nisqa_args = load_nisqa(ckpt_path=NISQA_CKPT, device=device)
+
+    # data loader
+    dataloader = create_dataloader(
+        data_dir=DATA_DIR, split="train", batch_size=BATCH_SIZE, num_workers=NUM_WORKERS
+    )
+
+    # experience buffer
+    buffer = ExperienceBuffer()
+
+    data_iter = iter(dataloader)
+
+    for step in tqdm(range(1, MAX_STEPS + 1), desc="MetricGAN+ RLHF"):
+        # fill experience buffer with old policy computations
+        for _ in range(ACCUM_STEPS):
+            try:
+                batch = next(data_iter)
+            except StopIteration:
+                data_iter = iter(dataloader)
+                batch = next(data_iter)
+
+            clean = batch[0].to(device)
+            noisy = batch[1].to(device)
+
+            noise_mag, noise_phase = get_spec_and_phase(noisy)
+            clean_mag, _ = get_spec_and_phase(clean)
+
+            with torch.no_grad():
+                # sft forward pass
+                sft_mask = sft_generator(noise_mag).clamp(min=0.05)
+                sft_enh_mag = sft_mask * noise_mag
+                sft_audio = transform_spec_to_wav(
+                    torch.expm1(sft_enh_mag), noise_phase, signal_length=clean.shape[-1]
+                )
+
+                # rl forward pass
+                rl_audio, mask_mean, action, log_prob_old = metricgan_forward(
+                    generator=rl_generator,
+                    noise_mag=noise_mag,
+                    noise_phase=noise_phase,
+                    sigma=SIGMA,
+                    add_noise=True,
+                    signal_length=clean.shape[-1],
+                )
+
+                # reward
+                rl_mos = get_nisqa_score(
+                    nisqa_model=nisqa_model,
+                    model_args=nisqa_args,
+                    audio_tensor=rl_audio,
+                    device=device,
+                )
+                sft_mos = get_nisqa_score(
+                    nisqa_model=nisqa_model,
+                    model_args=nisqa_args,
+                    audio_tensor=sft_audio,
+                    device=device,
+                )
+                reward = rl_mos - sft_mos
+
+                # kl and j_theta
+                kl = gaussian_kl(mean_rl=mask_mean, mean_sft=sft_mask, sigma=SIGMA)
+                j_theta = compute_j_theta(reward=reward, kl_div=kl, beta=BETA)
+
+            buffer.add(
+                {
+                    "noise_mag": noise_mag.detach(),
+                    "clean_mag": clean_mag.detach(),
+                    "action": action.detach(),
+                    "log_prob_old": log_prob_old.detach(),
+                    "j_theta": j_theta.detach(),
+                }
+            )
+
+        # ppo update
+        for _ in range(PPO_EPOCHS):
+            optimizer.zero_grad()
+
+            for exp in buffer:
+                log_prob_new, enh_mag = metricgan_recompute_log_prob(
+                    generator=rl_generator,
+                    noise_mag=exp["noise_mag"],
+                    stored_action=exp["action"],
+                    sigma=SIGMA,
+                )
+
+                l_ppo = ppo_clip_loss(
+                    log_prob_new=log_prob_new,
+                    log_prob_old=exp["log_prob_old"],
+                    j_theta=exp["j_theta"],
+                    eps=EPSILON,
+                )
+
+                l_mse = metricgan_mse_loss(
+                    enhanced_mag=enh_mag,
+                    clean_mag=exp["clean_mag"],
+                )
+
+                loss = combined_loss(ppo_loss=l_ppo, mse_loss=l_mse, lam=LAMBDA) / ACCUM_STEPS
+                loss.backward()
+
+            optimizer.step()
+
+        buffer.clear()
+
+        if step % LOG_INTERVAL == 0:
+            print(
+                f"Step {step}/{MAX_STEPS} | reward={reward.mean().item():.4f} | PPO Loss: {l_ppo.item():.4f} | MSE Loss: {l_mse.item():.4f} | Total Loss: {loss.item():.4f}"
+            )
+
+        if step % SAVE_EVERY == 0:
+            os.makedirs(SAVE_DIR, exist_ok=True)
+            ckpt_path = os.path.join(SAVE_DIR, f"metricgan_rlhf_step_{step}.pth")
+            torch.save(
+                {
+                    "step": step,
+                    "generator": rl_generator.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                },
+                ckpt_path,
+            )
+            print(f"Saved checkpoint: {ckpt_path}")
+
+    print("MetricGAN+ RLHF training complete")
 
 
 def main():
@@ -316,7 +455,7 @@ def main():
     if model == "cmgan":
         train_cmgan_rlhf(device=device)
     elif model == "metricgan":
-        train_metrocgan_rlhf(device=device)
+        train_metricgan_rlhf(device=device)
 
 
 if __name__ == "__main__":
