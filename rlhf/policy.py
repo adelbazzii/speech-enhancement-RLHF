@@ -37,8 +37,9 @@ def cmgan_forward(generator, noisy_spec, window, sigma=0.01, add_noise=True):
         noised_real, noised_imag = est_real, est_imag
         lp = torch.zeros(noisy_spec.shape[0], device=device)
 
-    # uncompress
+    # uncompress and convert to complex for istft
     est_spec = power_uncompress(noised_real, noised_imag).squeeze(1)
+    est_spec = torch.complex(est_spec[..., 0], est_spec[..., 1])
 
     # inverse short time fourier transform
     enhanced_wav = torch.istft(est_spec, 400, 100, window=window, onesided=True)
@@ -85,5 +86,5 @@ def cmgan_recompute_log_prob(generator, noisy_spec, stored_action, sigma=0.01):
 def metricgan_recompute_log_prob(generator, noise_mag, stored_action, sigma=0.01):
     mask_mean = generator(noise_mag).clamp(min=0.05)
     lp = gaussian_log_prob(action=stored_action, mean=mask_mean, sigma=sigma)
-    enh_mag = stored_action * noise_mag
+    enh_mag = mask_mean * noise_mag
     return lp, enh_mag
