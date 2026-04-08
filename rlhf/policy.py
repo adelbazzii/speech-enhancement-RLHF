@@ -1,7 +1,8 @@
 import torch
-from loss import gaussian_log_prob
+from rlhf.loss import gaussian_log_prob
 
 from models.cmgan.src.utils import power_uncompress
+from models.metricgan_plus.signal_processing import transform_spec_to_wav
 
 
 def sample_noise(mean, sigma=0.01):
@@ -36,13 +37,35 @@ def cmgan_forward(generator, noisy_spec, window, sigma=0.01, add_noise=True):
         noised_real, noised_imag = est_real, est_imag
         lp = torch.zeros(noisy_spec.shape[0], device=device)
 
-    # uncompress
+    # uncompress and convert to complex for istft
     est_spec = power_uncompress(noised_real, noised_imag).squeeze(1)
+    est_spec = torch.complex(est_spec[..., 0], est_spec[..., 1])
 
     # inverse short time fourier transform
     enhanced_wav = torch.istft(est_spec, 400, 100, window=window, onesided=True)
 
     return enhanced_wav, action_mean, action, lp
+
+
+def metricgan_forward(generator, noise_mag, noise_phase, sigma=0.01, add_noise=True, signal_length=None):
+    device = noise_mag.device
+
+    mask_mean = generator(noise_mag).clamp(min=0.05)
+
+    if add_noise:
+        noised_mask = sample_noise(mask_mean, sigma).clamp(min=0.05)
+        action = noised_mask
+        lp = gaussian_log_prob(action=noised_mask, mean=mask_mean, sigma=sigma)
+    else:
+        action = mask_mean
+        noised_mask = mask_mean
+        lp = torch.zeros(noise_mag.shape[0], device=device)
+
+    enh_mag = noised_mask * noise_mag
+    enh_audio = transform_spec_to_wav(torch.expm1(enh_mag), noise_phase, signal_length)
+
+    return enh_audio, mask_mean, action, lp
+
 
 # recompute log probabilities for current policy
 def cmgan_recompute_log_prob(generator, noisy_spec, stored_action, sigma=0.01):
@@ -58,3 +81,10 @@ def cmgan_recompute_log_prob(generator, noisy_spec, stored_action, sigma=0.01):
     )
 
     return lp, (est_real, est_imag)
+
+
+def metricgan_recompute_log_prob(generator, noise_mag, stored_action, sigma=0.01):
+    mask_mean = generator(noise_mag).clamp(min=0.05)
+    lp = gaussian_log_prob(action=stored_action, mean=mask_mean, sigma=sigma)
+    enh_mag = mask_mean * noise_mag
+    return lp, enh_mag
