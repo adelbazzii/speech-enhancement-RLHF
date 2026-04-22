@@ -1,4 +1,5 @@
 import copy
+import csv
 import os
 import random
 import sys
@@ -12,6 +13,7 @@ from tqdm import tqdm
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "models", "cmgan", "src"))
 
+from eval_rlhf import evaluate_mos
 from models.cmgan.src.models.generator import TSCNet as CMGANGenerator
 from models.cmgan.src.utils import power_compress, power_uncompress
 from models.metricgan_plus.model import Generator as MetricGANGenerator
@@ -30,15 +32,17 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 
 MODEL = "cmgan"  # "cmgan" or "metricgan"
-CMGAN_CKPT = "models/cmgan/src/best_ckpt/ckpt"
-METRICGAN_CKPT = "models/metricgan-plus/checkpoints/PESQ-GAN_trial2.pth"
-NISQA_CKPT = "nisqa/weights/nisqa_mos_only.tar"
+CMGAN_CKPT = "checkpoints/sft/cmgan/ckpt"
+METRICGAN_CKPT = "checkpoints/sft/metricgan/CSIG-GAN_trial1.pth"
+NISQA_CKPT = "checkpoints/nisqa/nisqa_mos_only.tar"
 DATA_DIR = "data/voicebank_demand"
-SAVE_DIR = "checkpoints/rlhf"
+SAVE_DIR = f"checkpoints/rlhf/{MODEL}"
+METRICS_PATH = f"logs/rlhf/{MODEL}_metrics.csv"
+METRICS_FIELDS = ["step", "reward", "ppo_loss", "mse_loss", "total_loss", "test_mos"]
 
 if MODEL == "cmgan":
-    BATCH_SIZE = 4
-    ACCUM_STEPS = 16
+    BATCH_SIZE = 2
+    ACCUM_STEPS = 32
 elif MODEL == "metricgan":
     BATCH_SIZE = 8
     ACCUM_STEPS = 8
@@ -46,16 +50,27 @@ elif MODEL == "metricgan":
 EPSILON = 0.01
 ALPHA = 0.7
 BETA = 0.0001
-LAMBDA = 1.0
+LAMBDA = 0.0
 SIGMA = 0.01
 
 LR = 1e-6
 MAX_STEPS = 2000
-PPO_EPOCHS = 5
+PPO_EPOCHS = 2
 
 NUM_WORKERS = 2
 LOG_INTERVAL = 10
 SAVE_EVERY = 50
+EVAL_INTERVAL = 10
+
+
+def log_metrics(row):
+    os.makedirs(os.path.dirname(METRICS_PATH), exist_ok=True)
+    write_header = not os.path.exists(METRICS_PATH)
+    with open(METRICS_PATH, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=METRICS_FIELDS)
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
 
 
 def get_device():
@@ -67,7 +82,7 @@ def get_device():
 
 
 def load_cmgan(ckpt_path, device):
-    generator = CMGANGenerator(num_channel=64, num_features=201).to(device)
+    generator = CMGANGenerator().to(device)
     if os.path.isfile(ckpt_path):
         ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
         generator.load_state_dict(ckpt)
@@ -78,7 +93,7 @@ def load_cmgan(ckpt_path, device):
 
 
 def load_metricgan(ckpt_path, device):
-    generator = MetricGANGenerator(causal=False).to(device)
+    generator = MetricGANGenerator().to(device)
     if os.path.isfile(ckpt_path):
         ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
         generator.load_state_dict(ckpt["generator"])
@@ -154,7 +169,7 @@ def cmgan_preprocess(noisy, clean, n_fft, hop, device):
     noisy = torch.transpose(noisy * c, 0, 1)
     clean = torch.transpose(clean * c, 0, 1)
 
-    window = torch.hamming_window(n_fft).to(device)
+    window = torch.hann_window(n_fft).to(device)
     noisy_spec = torch.stft(
         noisy, n_fft, hop, window=window, onesided=True, return_complex=False
     )
@@ -175,7 +190,7 @@ def train_cmgan_rlhf(device):
 
     # rl policy
     rl_generator = load_cmgan(ckpt_path=CMGAN_CKPT, device=device)
-    rl_generator.train()
+    rl_generator.eval()
     optimizer = torch.optim.Adam(rl_generator.parameters(), lr=LR)
 
     # sft policy
@@ -200,6 +215,8 @@ def train_cmgan_rlhf(device):
     data_iter = iter(dataloader)
 
     for step in tqdm(range(1, MAX_STEPS + 1), desc="CMGAN RLHF"):
+        rewards_acc, ppo_losses_acc, mse_losses_acc, total_losses_acc = [], [], [], []
+
         # fill expereince buffer with old policy computations
         for _ in range(ACCUM_STEPS):
             try:
@@ -258,6 +275,8 @@ def train_cmgan_rlhf(device):
                 )
                 j_theta = compute_j_theta(reward=reward, kl_div=kl, beta=BETA)
 
+            rewards_acc.append(reward.mean().item())
+
             buffer.add(
                 {
                     "noisy_spec": noisy_spec.detach(),
@@ -306,6 +325,9 @@ def train_cmgan_rlhf(device):
                     combined_loss(ppo_loss=l_ppo, mse_loss=l_mse, lam=LAMBDA)
                     / ACCUM_STEPS
                 )
+                ppo_losses_acc.append(l_ppo.item())
+                mse_losses_acc.append(l_mse.item())
+                total_losses_acc.append(loss.item() * ACCUM_STEPS)
                 # accumulate gradients
                 loss.backward()
 
@@ -317,10 +339,32 @@ def train_cmgan_rlhf(device):
         buffer.clear()
 
         # log training metrics
+        log_row = {k: None for k in METRICS_FIELDS}
+        log_row["step"] = step
         if step % LOG_INTERVAL == 0:
+            log_row["reward"] = sum(rewards_acc) / len(rewards_acc)
+            log_row["ppo_loss"] = sum(ppo_losses_acc) / len(ppo_losses_acc)
+            log_row["mse_loss"] = sum(mse_losses_acc) / len(mse_losses_acc)
+            log_row["total_loss"] = sum(total_losses_acc) / len(total_losses_acc)
             print(
-                f"Step {step}/{MAX_STEPS} | reward={reward.mean().item():.4f} | PPO Loss: {l_ppo.item():.4f} | MSE Loss: {l_mse.item():.4f} | Total Loss: {loss.item():.4f} "
+                f"Step {step}/{MAX_STEPS} | reward={log_row['reward']:.4f} | PPO Loss: {log_row['ppo_loss']:.4f} | MSE Loss: {log_row['mse_loss']:.4f} | Total Loss: {log_row['total_loss']:.4f} "
             )
+
+        # evaluate on test set
+        if step % EVAL_INTERVAL == 0:
+            test_mos = evaluate_mos(
+                rl_generator,
+                "cmgan",
+                nisqa_model,
+                nisqa_args,
+                device,
+                cut_len=16000 * 2,
+            )
+            log_row["test_mos"] = test_mos
+            print(f"Step {step}/{MAX_STEPS} | Test NISQA MOS: {test_mos:.4f}")
+
+        if step % LOG_INTERVAL == 0 or step % EVAL_INTERVAL == 0:
+            log_metrics(log_row)
 
         # save checkpoint
         if step % SAVE_EVERY == 0:
@@ -348,6 +392,7 @@ def train_metricgan_rlhf(device):
 
     # rl policy
     rl_generator = load_metricgan(ckpt_path=METRICGAN_CKPT, device=device)
+    rl_generator.lstm.dropout = 0
     rl_generator.train()
     optimizer = torch.optim.Adam(rl_generator.parameters(), lr=LR)
 
@@ -371,6 +416,8 @@ def train_metricgan_rlhf(device):
     data_iter = iter(dataloader)
 
     for step in tqdm(range(1, MAX_STEPS + 1), desc="MetricGAN+ RLHF"):
+        rewards_acc, ppo_losses_acc, mse_losses_acc, total_losses_acc = [], [], [], []
+
         # fill experience buffer with old policy computations
         for _ in range(ACCUM_STEPS):
             try:
@@ -422,6 +469,8 @@ def train_metricgan_rlhf(device):
                 kl = gaussian_kl(mean_rl=mask_mean, mean_sft=sft_mask, sigma=SIGMA)
                 j_theta = compute_j_theta(reward=reward, kl_div=kl, beta=BETA)
 
+            rewards_acc.append(reward.mean().item())
+
             buffer.add(
                 {
                     "noise_mag": noise_mag.detach(),
@@ -460,6 +509,9 @@ def train_metricgan_rlhf(device):
                     combined_loss(ppo_loss=l_ppo, mse_loss=l_mse, lam=LAMBDA)
                     / ACCUM_STEPS
                 )
+                ppo_losses_acc.append(l_ppo.item())
+                mse_losses_acc.append(l_mse.item())
+                total_losses_acc.append(loss.item() * ACCUM_STEPS)
                 loss.backward()
 
             torch.nn.utils.clip_grad_norm_(rl_generator.parameters(), max_norm=1.0)
@@ -467,10 +519,32 @@ def train_metricgan_rlhf(device):
 
         buffer.clear()
 
+        log_row = {k: None for k in METRICS_FIELDS}
+        log_row["step"] = step
         if step % LOG_INTERVAL == 0:
+            log_row["reward"] = sum(rewards_acc) / len(rewards_acc)
+            log_row["ppo_loss"] = sum(ppo_losses_acc) / len(ppo_losses_acc)
+            log_row["mse_loss"] = sum(mse_losses_acc) / len(mse_losses_acc)
+            log_row["total_loss"] = sum(total_losses_acc) / len(total_losses_acc)
             print(
-                f"Step {step}/{MAX_STEPS} | reward={reward.mean().item():.4f} | PPO Loss: {l_ppo.item():.4f} | MSE Loss: {l_mse.item():.4f} | Total Loss: {loss.item():.4f}"
+                f"Step {step}/{MAX_STEPS} | reward={log_row['reward']:.4f} | PPO Loss: {log_row['ppo_loss']:.4f} | MSE Loss: {log_row['mse_loss']:.4f} | Total Loss: {log_row['total_loss']:.4f}"
             )
+
+        # evaluate on test set
+        if step % EVAL_INTERVAL == 0:
+            test_mos = evaluate_mos(
+                rl_generator,
+                "metricgan",
+                nisqa_model,
+                nisqa_args,
+                device,
+                cut_len=16000 * 2,
+            )
+            log_row["test_mos"] = test_mos
+            print(f"Step {step}/{MAX_STEPS} | Test NISQA MOS: {test_mos:.4f}")
+
+        if step % LOG_INTERVAL == 0 or step % EVAL_INTERVAL == 0:
+            log_metrics(log_row)
 
         if step % SAVE_EVERY == 0:
             os.makedirs(SAVE_DIR, exist_ok=True)

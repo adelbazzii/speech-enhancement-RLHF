@@ -1,8 +1,8 @@
 import torch
-from rlhf.loss import gaussian_log_prob
 
 from models.cmgan.src.utils import power_uncompress
 from models.metricgan_plus.signal_processing import transform_spec_to_wav
+from rlhf.loss import gaussian_log_prob
 
 
 def sample_noise(mean, sigma=0.01):
@@ -47,7 +47,9 @@ def cmgan_forward(generator, noisy_spec, window, sigma=0.01, add_noise=True):
     return enhanced_wav, action_mean, action, lp
 
 
-def metricgan_forward(generator, noise_mag, noise_phase, sigma=0.01, add_noise=True, signal_length=None):
+def metricgan_forward(
+    generator, noise_mag, noise_phase, sigma=0.01, add_noise=True, signal_length=None
+):
     device = noise_mag.device
 
     mask_mean = generator(noise_mag).clamp(min=0.05)

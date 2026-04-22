@@ -8,3 +8,10 @@ data/libri_mix/*
 # Python bytecode cache
 __pycache__/
 *.pyc
+
+# ignore all checkpoint files
+checkpoints/**/*.pth
+
+# keep only the latest step per model
+!checkpoints/**/cmgan_rlhf_step_2000.pth
+!checkpoints/**/metricgan_rlhf_step_2000.pth
