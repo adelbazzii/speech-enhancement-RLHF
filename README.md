@@ -1,142 +1,110 @@
 # RLHF-SE
 
-### Paper
+**Reinforcement Learning from Human Feedback for Speech Enhancement.**
+A PyTorch implementation of [Using RLHF to align speech enhancement approaches to mean-opinion quality scores](https://arxiv.org/pdf/2410.13182), fine-tuning pre-trained speech enhancement models (CMGAN, MetricGAN+) with PPO to maximize predicted human-perceived quality (NISQA MOS).
 
-Using RLHF to align speech enhancement approaches to mean-opinion quality scores
+## Why
 
-[https://arxiv.org/pdf/2410.13182](https://arxiv.org/pdf/2410.13182)
+Standard speech enhancement models optimize reference-based metrics like PESQ or STOI, which do not always reflect human perception. We follow the paper's RLHF approach: take a frozen pre-trained "SFT" generator, fine-tune a copy of it with PPO, and use NISQA — a neural MOS predictor — as the reward signal.
 
----
-
-### Datasets
-
-Dataset placeholder folders are added. Data are ignored by git due to their large size.
-
-Datasets used are referenced below.
-
-**a) VoiceBank_DEMAND_16k**
-
-Source: [https://www.kaggle.com/datasets/jweiqi/voicebank-demand-16k](https://www.kaggle.com/datasets/jweiqi/voicebank-demand-16k)
-
-**b) LibriMix**
-
-Source: [https://github.com/JorisCos/LibriMix](https://github.com/JorisCos/LibriMix)
-
----
-
-### Setup
-
-**Using uv (recommended):**
-
-```bash
-uv sync
+```
+reward  =  NISQA(ŷ_rl) − NISQA(ŷ_sft)
+loss    =  L_PPO-clip  +  λ · L_MSE
 ```
 
-**Using pip:**
+The KL penalty keeps the RL policy close to the SFT reference; the MSE term keeps it close to the clean target.
 
+## Results
+
+After 2000 steps on VoiceBank+DEMAND:
+
+| Model      | Baseline MOS | RLHF (λ=1) |   Δ   | PPO-only ablation (λ=0) |
+| ---------- | :----------: | :--------: | :---: | :---------------------: |
+| CMGAN      |     3.28     |  **3.38**  | +0.10 |      3.29 (+0.01)       |
+| MetricGAN+ |     4.11     |  **4.14**  | +0.03 |      4.14 (+0.03)       |
+
+The ablation confirms the paper's claim: removing the MSE term (λ=0) collapses the gain on CMGAN, validating that MSE is necessary for stable fine-tuning.
+
+**Training curves** (reward, PPO loss, MSE loss, total loss, test MOS):
+
+|                         CMGAN                          |                           MetricGAN+                            |
+| :----------------------------------------------------: | :-------------------------------------------------------------: |
+| ![CMGAN curves](logs/rlhf/lambda%3D1/cmgan_curves.png) | ![MetricGAN+ curves](logs/rlhf/lambda%3D1/metricgan_curves.png) |
+
+Per-step metrics CSVs are in `logs/rlhf/lambda=1/` (proposed approach) and `logs/rlhf/lambda=0/` (ablation).
+
+## Setup
+
+```bash
+uv sync                                 # creates .venv and installs deps
+uv run python train_rlhf.py             # runs RLHF fine-tuning
+```
+
+Or, with pip:
 ```bash
 python -m venv .venv
-.venv\Scripts\activate       # Windows
-# source .venv/bin/activate  # Mac/Linux
+.venv\Scripts\activate                  # Windows; use source .venv/bin/activate on Mac/Linux
 pip install -e .
+python train_rlhf.py
 ```
 
----
+Switch between models by editing the `MODEL` constant at the top of `train_rlhf.py` (`"cmgan"` or `"metricgan"`).
 
-### Project Structure
+## Datasets
 
-> **Note:** `models/cmgan/`, `models/metricgan_plus/`, and `nisqa/` are cloned
-> third-party repositories included unchanged. Original code lives in `train_rlhf.py`
-> and `rlhf/`.
+Place the dataset under `data/voicebank_demand/{train,test}/{clean,noisy}/`. Files are gitignored due to size.
+
+- **VoiceBank+DEMAND (16 kHz):** [Kaggle](https://www.kaggle.com/datasets/jweiqi/voicebank-demand-16k)
+- **LibriMix:** [GitHub](https://github.com/JorisCos/LibriMix)
+
+## Project Structure
+
+> `models/cmgan/`, `models/metricgan_plus/`, and `nisqa/` are cloned third-party
+> repositories included unchanged. Original code lives in `train_rlhf.py` and `rlhf/`.
 
 ```
 speech-enhancement-RLHF/
-│
-├── train_rlhf.py                # RLHF training entry point
-├── third_party_path_setup.py    # sys.path setup for third-party internal imports
+├── train_rlhf.py                # Training entry point (CMGAN + MetricGAN+ PPO loops)
+├── third_party_path_setup.py    # sys.path setup for CMGAN's internal imports
 ├── rlhf/
-│   ├── loss.py                  # PPO, KL divergence, and MSE loss functions
-│   ├── policy.py                # Forward pass and log prob computation (CMGAN + MetricGAN+)
+│   ├── loss.py                  # PPO clip loss, KL divergence, MSE, combined loss
+│   ├── policy.py                # Forward + log-prob recomputation (CMGAN, MetricGAN+)
 │   ├── buffer.py                # Experience replay buffer
-│   └── nisqa.py                 # NISQA reward model loading and inference
-│
+│   └── nisqa.py                 # NISQA reward model (load + batched MOS inference)
 ├── models/
-│   ├── cmgan/                   # cloned: Conformer-based Metric GAN (CMGAN)
-│   │   └── src/
-│   │       ├── models/          #   Generator (TSCNet), Discriminator, Conformer blocks
-│   │       ├── data/            #   VoiceBank+DEMAND data loader
-│   │       ├── train.py         #   Supervised training (distributed)
-│   │       ├── evaluation.py    #   Inference + metric evaluation
-│   │       └── tools/           #   PESQ, STOI, CSIG, CBAK, COVL metrics
-│   │
-│   └── metricgan_plus/          # cloned: MetricGAN+ (LSTM-based enhancement)
-│       ├── model.py             #   Generator + Discriminator (BiLSTM)
-│       ├── train.py             #   Training loop with replay buffer
-│       ├── inference.py         #   Inference pipeline
-│       ├── signal_processing.py #   STFT and phase handling
-│       └── metric_functions/    #   PESQ, CSIG, CBAK, COVL scoring
-│
-├── nisqa/                       # cloned: NISQA neural speech quality predictor
-│   ├── nisqa/NISQA_lib.py       #   Core model (CNN + Self-Attention/LSTM)
-│   ├── nisqa/NISQA_model.py     #   High-level training/inference wrapper
-│   ├── run_predict.py           #   Predict MOS score for audio files
-│   ├── config/                  #   YAML training configurations
-│   └── weights/                 #   Pre-trained model weights (.tar files)
-│
-├── data/
-│   ├── voicebank_demand/        # VoiceBank+DEMAND dataset (not tracked by git)
-│   └── libri_mix/               # LibriMix dataset placeholder (not tracked by git)
-│
-├── pyproject.toml               # Project dependencies
-└── uv.lock                      # Pinned dependency versions (uv lockfile)
+│   ├── cmgan/                   # CMGAN: TSCNet generator (Conformer)
+│   └── metricgan_plus/          # MetricGAN+: BiLSTM generator
+├── nisqa/                       # NISQA neural MOS predictor (frozen reward model)
+├── logs/rlhf/                   # Training metrics (CSV) and curves (PNG)
+├── docs/
+└── pyproject.toml               # Project dependencies
 ```
 
----
+## Hyperparameters
 
-### Implementation Status
+Following [the paper](https://arxiv.org/pdf/2410.13182):
 
-| Component | Status | Notes |
-|-----------|--------|-------|
-| CMGAN model | Cloned | TSCNet generator, discriminator, supervised training |
-| MetricGAN+ model | Cloned | BiLSTM generator, discriminator, training |
-| NISQA reward model | Cloned | CNN+SA quality predictor, predict/train scripts |
-| RLHF loss functions (`rlhf/loss.py`) | Complete | PPO clip loss, KL divergence, combined loss |
-| RLHF policy (`rlhf/policy.py`) | Complete | CMGAN and MetricGAN+ forward pass + log prob recomputation |
-| NISQA wrapper (`rlhf/nisqa.py`) | Complete | Batched MOS inference, resampling, mel segmentation |
-| RLHF training loop (`train_rlhf.py`) | Complete | CMGAN and MetricGAN+ loops with checkpoint saving |
+| Parameter        | Value  | Meaning                              |
+| ---------------- | ------ | ------------------------------------ |
+| ε (PPO clip)     | 0.01   | PPO step size limit                  |
+| β (KL weight)    | 0.0001 | KL divergence penalty                |
+| λ (MSE weight)   | 1.0    | Weight of MSE loss                   |
+| α (MSE channels) | 0.7    | Magnitude vs. complex weight (CMGAN) |
+| σ (Gaussian)     | 0.01   | Exploration noise on masks           |
+| Learning rate    | 1e-6   |                                      |
+| Effective batch  | 64     | 4×16 (CMGAN) or 8×8 (MetricGAN+)     |
+| PPO epochs       | 5      | Per buffer fill                      |
 
----
+## Citation
 
-### What Remains To Be Implemented
-
-**train_rlhf.py - CMGAN**
-
-- [x] SFT policy forward pass: STFT → normalize → run frozen generator → get masks
-- [x] RL policy forward pass: same pipeline + add Gaussian noise to masks
-- [x] Convert both outputs back to audio (iSTFT) for reward computation
-- [x] Load NISQA from `nisqa/weights/nisqa_mos_only.tar` and run inference on both outputs
-- [x] Compute reward: `r_mos = NISQA(ŷ_rl) − NISQA(ŷ_sft)`
-- [x] Compute KL divergence between RL and SFT policies using `gaussian_kl()`
-- [x] Compute `J_theta = reward − β × KL` using `compute_j_theta()`
-- [x] Compute log probabilities for old and new RL policy using `gaussian_log_prob()`
-- [x] Compute PPO clip loss using `ppo_clip_loss()`
-- [x] Compute MSE loss using `cmgan_mse_loss()`
-- [x] Combine: `L_theta = ppo_loss + λ × mse_loss` using `combined_loss()`
-- [x] Gradient accumulation and optimizer step
-
-**train_rlhf.py - MetricGAN+**
-
-- [x] Implement `train_metricgan_rlhf()` following same RLHF loop
-- [x] Use `metricgan_mse_loss()` instead of `cmgan_mse_loss()`
-
-**train_rlhf.py - General**
-
-- [x] Implement `main()` with hardcoded configuration
-- [x] Checkpoint saving for RLHF-trained models
-- [x] Logging (loss, reward per step)
-- [ ] Evaluation against baseline after training
-
----
-
-*Last edited: 2026-04-07*
-
+```bibtex
+@misc{kumar2024usingrlhfalignspeech,
+      title={Using RLHF to align speech enhancement approaches to mean-opinion quality scores},
+      author={Anurag Kumar and Andrew Perrault and Donald S. Williamson},
+      year={2024},
+      eprint={2410.13182},
+      archivePrefix={arXiv},
+      primaryClass={eess.AS},
+      url={https://arxiv.org/abs/2410.13182},
+}
+```
